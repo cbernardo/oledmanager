@@ -1,0 +1,89 @@
+The IBM Master Boot Record
+==========================
+
+Address (H) Size (B)    Description
+0000        440         bootstrap code; set to 0 for none
+01B8        4           optional 32-bit Disk Signature
+01BC        2           ZERO
+01BE        64          16 bytes x 4 Primary Partition Tables
+01FE        2           0x55 0xAA - the Master Boot Signature
+
+Partition Record
+================
+
+Offset      Size        Description
+0           1           Boot Flag (0x80 = bootable, 0x00 = non-bootable)
+1           3           CHS address of first sector in partition
+4           1           Partition Type
+5           3           CHS address of last sector in partition
+8           4           LBA for first block (sector) in partition (Little-Endian)
+12          4           number of sectors in partition (Little-Endian)
+
+CHS Addressing:
+===============
+For historical reasons, Sector is numbered from 1..64 and Head is 0..255.
+In the MBR, the address is broken down as follows:
+Byte 0:  Head (0..255)
+Byte 1:
+        Bit0:5 = Sector (1..63)
+        Bit6:7 = Bits 8:9 of Cylinder
+Byte 2: Bits0:7 of Cylinder
+
+
+Sector numbering is 1..63
+Head numbering is 0..255
+Cylinder numbering is 0..1023
+
+Total addressable memory is <8GB (63 sectors * 256 heads * 1024 cylinders * 512 bytes/sector)
+Due to a historic bug, the addressable memory may be smaller (63 sect x 255 heads x 1024 cyl x 512 B/sect)
+
+If the CHS address exceeds 1023
+
+Example of CHS decoding:
+h = byte0;
+s = byte1 & 0x3f;
+c = ((byte1 & 0xc0) << 2) + byte2;
+
+If the CHS address exceeds 1023:254:63, LBA must be used and the CHS address
+must be set to 1023:254:63.  If GPT is used and the CHS is exceeded, the
+address must be set to 1023:254:63.
+
+
+Partition Type:
+===============
+Code    Description
+0x04    FAT16, where number of sectors is < 65535 (32MB) and the entire
+        partition is located within the first 32MB of the disk if it is a
+        primary partition. (As a Logical Partition it can be located elsewhere.)
+0x06    FAT16, where number of sectors is > 65535 or it is a primary partition
+        utilizes which utilizes addresses beyond the first 32MB of the disk.
+0xDA    This is not a valid partition flag but it is used by the 4DSystems
+        PICASO controller.
+
+
+
+
+====
+Examples from a 2GB SD card:
+Original partitioning (FAT only):
+    boot: 0
+    CHS start: 02 06 00 = 0,2,6
+    Type: 06 (FAT16)
+    CHS end: 04 c4 c4   = 964, 4, 4
+    LBA start: 83 00 00 00 = 131
+    NSect: 7d 4f 3b 00 = 3886973
+
+New partitioning (1GB FAT, rest is RAW)
+    boot: 0
+    CHS start: 01 01 00 = 0,1,1
+    Type: 06
+    CHS end: 04 c4 ff   = 1023, 4, 4
+    LBA start: 04 00 00 00 = 4
+    NSect: 70 cd 1d 00 = 1953136
+
+    boot: 0
+    CHS start: 04 c4 ff = 1023, 4, 4
+    Type: da
+    CHS end: 04 c4 ff   = 1023, 4, 4
+    LBA start: 74 cd 1d 00 = 1953140
+    NSect: 88 82 1d 00     = 1933960

@@ -1,0 +1,420 @@
+/**
+    file: oled.h
+
+    Interface for the uAMOLED/uLCD driver for 4DSystems' PICASO
+    series graphics processor.  This is the serial version
+    only (SGC), not the 4D Graphics Language version.
+
+    Copyright (C) 2012 Dr. Cirilo Bernardo (cjh.bernardo@gmail.com)
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>
+
+    For licensing under different terms or for support, email cjh.bernardo@gmail.com
+ */
+
+/*
+    Notes:
+        + 37 basic commands implemented
+        + 20 SD (raw + FAT16) commands not yet implemented
+
+    Color schemes:
+        16-bit: R4R3R2R1R0G5G4G3  G2G1G0B4B3B2B1B0
+        8-bit:  R2R1R0G2G1G0B1B0 ('truecolor' 8-bit)
+ */
+
+#ifndef OLED_H
+#define OLED_H
+
+#include <pthread.h>
+#include <linux/limits.h>
+#include <list>
+#include <string>
+
+#include "comport.h"
+
+namespace disp {
+
+/* maximum requests to queue; must be 2^n *DEPRECATE* */
+#define MAXQUEUE (16)
+/* mask for queue; must be MAXQUEUE -1 *DEPRECATE* */
+#define MAXQLEN (15)
+
+// max. length of an error message
+#define PGDERRLEN (512)
+// max. length of incoming data for callback
+#define PGDDLEN (4)
+    /* machine states for the display controller */
+    enum DSTATE {
+        LCD_INACTIVE = 0,   /* no established connection */
+        LCD_IDLE,           /* waiting to queue arbitrary command */
+        LCD_BUSY            /* waiting for command to complete */
+    };
+
+    /* bit rate settings */
+    enum DBAUD {
+        DB_9600     = 0x06, /* the display always starts up at 9600bps */
+        DB_57600    = 0x0c,
+        DB_115200   = 0x0d,
+        DB_128000   = 0x0e,
+        DB_256000   = 0x0f,
+#ifdef __linux__
+        DB_MAX = DB_115200
+#else
+        DB_MAX = DB_256000
+#endif
+    };
+
+    /* Display device type */
+    enum DTYPE {
+        DEV_UNKNOWN = -1,
+        DEV_OLED    = 0,
+        DEV_LCD,
+        DEV_VGA
+    };
+
+
+    /* Display Control Functions [modes for ctl() routine] */
+    enum DMODE {
+        DM_BACKLIGHT = 0,
+        DM_DISPLAY,         // 1
+        DM_CONTRAST,        // 2
+        DM_STANDBY,         // 3
+        DM_ORIENT,          // 4
+        DM_TOUCHPAD,        // 5
+        DM_IMGFORMAT,       // 6
+        DM_PROTECTFAT = 8
+    };
+
+    /* Backlight and Display values */
+    enum DPOWER {
+        OFF = 0,
+        ON
+    };
+
+    /* Power mode (sleep, wake) */
+    enum DWAKE {
+        SLEEP = 0,
+        WAKE
+    };
+
+    /* Orientation */
+    enum DORIENT {
+        LANDSCAPE = 1,
+        LANDSCAPE_R,    // 2
+        PORTRAIT,       // 3
+        PORTRAIT_R      // 4
+    };
+
+    /* Touchpad options */
+    enum DTPSTATE {
+        TP_OFF = 0,
+        TP_ON,          // 1
+        /* resets the active region, not the device */
+        TP_RESET        // 2
+    };
+
+    /* Image Format options */
+    enum DIMGFMT {
+        IMG_NEW = 0,
+        IMG_OLD         // 1
+    };
+
+    /* FAT protection flag */
+    enum DFATPROT {
+        PROTECT = 0,
+        UNPROTECT = 2
+    };
+
+    /* Volume */
+    enum DVOL {
+        VOL_MIN     = 8,
+        VOL_MAX     = 0x7f,
+        VOL_MUTE    = 0,
+        VOL_DOWN8   = 1,
+        VOL_DOWN    = 3,
+        VOL_UP      = 0xfd,
+        VOL_UP8     = 0xfe,
+        VOL_UNMUTE  = 0xff
+    };
+
+    /* Suspend / Peripheral Power options (bitmask) */
+    enum DSUSP {
+        SUB_MICROSD     = 0x80,
+        SUB_AUDIO       = 0x40,
+        SUB_TOUCHPAD    = 0x20,
+        WAKE_P1         = 0x08,
+        WAKE_P0         = 0x04,
+        WAKE_TOUCH      = 0x02,
+        WAKE_SERIAL     = 0x01
+    };
+
+    /* Pen Size */
+    enum DPENTYPE {
+        SOLID = 0,
+        WIREFRAME   // 1
+    };
+
+    /* font sizes */
+    enum DFONTSIZE {
+        FNT_SMALL   = 0,        /* 5x7 pixels */
+        FNT_MEDIUM  = 1,        /* 8x8 pixels */
+        FNT_LARGE   = 2,        /* 8x12 pixels */
+        FNT_HUGE    = 3,        /* 12x16 pixels */
+        FPROPORTIONAL = 0x10 /* only applicable to STRING drawing commands */
+    };
+
+    /* text opacity */
+    enum DOPACITY {
+        TRANSPARENT = 0,
+        OPAQUE      = 1
+    };
+
+    /* touchpad modes */
+    enum DTPMODE {
+        TM_ANY      = 0,
+        TM_PRESS    = 1,
+        TM_RELEASE  = 2,
+        TM_MOVING   = 3,
+        TM_STATUS   = 4,
+        TM_COORD    = 5
+    };
+    /* touchpad status; 1..3 are the same as the modes */
+    enum DTPSTATUS {
+        TS_NONE     = 0,
+        TS_PRESS    = 1,
+        TS_RELEASE  = 2,
+        TS_MOVING   = 3
+    };
+
+    /* short definitions */
+    typedef unsigned short ushort;
+    typedef unsigned char uchar;
+
+    /* Display device version information */
+    struct PGDVER {
+        uchar display_type;
+        uchar hardware_rev;
+        uchar firmware_rev;
+        unsigned short hres;
+        unsigned short vres;
+        PGDVER() {
+            display_type = DEV_UNKNOWN;
+            hardware_rev = 0;
+            firmware_rev = 0;
+            hres = 0;
+            vres = 0;
+        }
+    };
+
+    /* Commands used in callback notification */
+    enum PGDCMD {
+        PG_NONE = 0,
+        PG_SLEEP,       // result: ACK/NACK
+        PG_TOUCH_DATA,  // result: 4-byte X,Y coord.
+        PG_TOUCH_WAIT,  // result: ACK/NACK
+        // to be extended as parts are implemented
+    };
+
+    /** PICASSO Graphics DEVICE */
+    class PGD {
+        private:
+            com::COMPORT port;          // serial communications port
+            DBAUD baud;                 // current communications rate
+            unsigned int portspeed;     // baud parameter used by COMPORT
+            PGDCMD curcmd;              // current command
+            void  *curdata;             // pointer to data for callback
+            int   brcv;                 // data bytes received
+            char  datain[PGDDLEN];      // incoming data for callback
+            void (*callback)(class PGD*, PGDCMD, bool, void *); // user callback
+            void *usrobj;               // user object pointer
+            /* W32 */
+            pthread_t procloop;         // process loop (thread)
+            volatile DSTATE state;      // state machine variable
+            char errmsg[PGDERRLEN];
+            bool halt;                  // flag to indicate we are halting
+            /* response processing routines */
+            int autobaud(void);         // p.9, PICASO-SGC-COMMANDS-SIS-rev3.pdf
+            // convert resolution code to a number; 0 = unknown
+            unsigned int convertRes(char rescode);
+            // wait for an ACK; all other characters are rejected.
+            // returns 0 for success, -1 for comms fault, +2 for timeout
+            int waitACK(int timeout);
+            // wait for a NACK; all other characters are rejected.
+            // returns 0 for success, -1 for comms fault, +2 for timeout
+            int waitNACK(int timeout);
+            // wait for either an ACK or a NACK while rejecting other characters
+            // return -1 for comms fault, 0 for ACK, +1 for NACK, +2 for timeout
+            int waitACKNACK(int timeout);
+
+
+        public:
+            PGD();
+            ~PGD();
+
+            // data processing routine; not to be called by the user
+            int  Process(void);
+            // user callback to support Touch routines
+            int  SetCallback(void (*cb)(class PGD*, PGDCMD, bool, void *), void *obj);
+            /* port access routines */
+            int  Connect(const char *portname);
+            void Close(void);
+            const char *GetError(void) { return errmsg; }
+
+            /*
+                LOW LEVEL COMMANDS
+
+                Unless specified, commands return -1 for a general fault,
+                0 for success, +1 if a NACK was received, +2 for
+                a timeout on ACK/NACK, and -2 if the command failed
+                in such a way that the display will require a manual reset.
+            */
+            int  SetBaud(enum disp::DBAUD);                         /* p.10 */
+            enum disp::DBAUD GetBaud(void) { return baud; }
+            int  Version(struct disp::PGDVER *ver, bool display);   /* p.11 */
+            int  ReplaceBackground(ushort color);                   /* p.12, immediately replaces the background color */
+            int  Clear(void);                                       /* p.13 */
+            int  Ctl(uchar mode, uchar value);                      /* p.14 */
+            int  SetVolume(uchar value);                            /* p.16 */
+            int  Suspend(uchar options, uchar duration);            /* p.17 */
+            int  ReadPin(uchar pin, uchar *status);                 /* p.18 */
+            int  WritePin(uchar pin, uchar value);                  /* p.19 */
+            int  ReadBus(uchar *status);                            /* p.20  note: BUS0..7 is the same as Pin8..15 */
+            int  WriteBus(uchar value);                             /* p.21 */
+
+            /* GRAPHICS COMMANDS */
+            /* p.23 Bitmaps may be 8x8 (64 indices), 16x16 (16 indices), or 32x32 (7 indices) */
+            // CAVEAT: All bitmap groups share the same memory; writing to any group will
+            // corrupt a subset of the other groups.
+            int  AddBitmap(uchar group, uchar index, const uchar *data, int datalen);
+            /* p. 24 */
+            int  DrawBitmap(uchar group, uchar index, ushort x, ushort y, ushort color);
+            /* p.25 wireframe if PENSIZE=1, solid if PENSIZE=0 */
+            int  Circle(ushort x, ushort y, ushort radius, ushort color);
+            /* p.26 */
+            // CAVEAT: points must be in anticlockwise order
+            int  Triangle(ushort x1, ushort y1, ushort x2, ushort y2,
+                          ushort x3, ushort y3, ushort color);
+            /* p.27 note: ORIENTATION *may* have no effect; the configuration tool must be used to
+            set the PICASO controller to use the desired orientation by default */
+            int  DrawIcon(ushort x, ushort y, ushort width, ushort height,
+                          uchar colormode, const uchar *data, int datalen);
+            /* p.28 note: background color only changes for future commands, unlike replacebackground() */
+            int  SetBackground(ushort color);
+            /* p.29 */
+            int  Line(ushort x1, ushort y1, ushort x2, ushort y2, ushort color);
+            /* p.30 note: 3 to 7 vertices only. Wireframe only */
+            int  Polygon(uchar vertices, ushort *xp, ushort *yp, ushort color);
+            /* p.31 note: solid or wireframe depending on PENSIZE. (x1,y1) is TOP LEFT,  (x2, y2) is BOTTOM RIGHT */
+            int  Rectangle(ushort x1, ushort y1, ushort x2, ushort y2, ushort color);
+            /* p.32 note: solid or wireframe depending on PENSIZE */
+            int  Ellipse(ushort x, ushort y, ushort rx, ushort ry, ushort color);
+            /* p.33 */
+            int  WritePixel(ushort x, ushort y, ushort color);
+            /* p.34 */
+            int  ReadPixel(ushort x, ushort y, ushort *color);
+            /* p.35 */
+            int  CopyPaste(ushort xsrc, ushort ysrc, ushort xdst, ushort ydst,
+                           ushort width, ushort height);
+            /* p.36 */
+            int  ReplaceColor(ushort x1, ushort y1, ushort x2, ushort y2,
+                              ushort oldcolor, ushort newcolor);
+            /* p.37 */
+            int  PenSize(uchar size);
+
+            /* TEXT COMMANDS */
+            /* p.39 */
+            int  SetFont(uchar size);
+            /* p.40 */
+            int  SetOpacity(uchar mode);
+            /* p.41 note: glyphs are only characters 32 to 127. Row and column are calculated from fixe font block size */
+            int  ShowChar(uchar glyph, uchar col, uchar row, ushort color);
+            /* p.42 note: glyphs are taken from the appropriate font and pixels are mindlessly scaled by an integer value */
+            int  ScaleChar(uchar glyph, ushort x, ushort y, ushort color, uchar xmul, uchar ymul);
+            /* p.43 note: the fonts can be treated as proportional rather than fixed spacing by setting the bit 0x10.
+                The max. string length is 256 plus NULL terminator. */
+            int  ShowString(uchar col, uchar row, uchar font, ushort color, const char *data);
+            /* p.44 note: as with showstring(), proportional characters are supported and max string is 256 + NULL
+                but the Description conflicts and claims max string is 512 bytes */
+            int  ScaleString(ushort x, ushort y, uchar font, ushort color, uchar width, uchar height,
+                             const char *data);
+            /* p.45 */
+            int  Button(bool pressed, ushort x, ushort y, ushort bcolor, uchar font,
+                        ushort tcolor, uchar xmul, uchar ymul, const char *data);
+
+            /* TOUCHPAD COMMANDS */
+            /* p.47 : points must be a minimum ushort[2] */
+            int  GetTouch(uchar mode, ushort *points);
+            /* p.48 wait for timeout*2msec; return ACK if the screen was touched, NACK if timed out */
+            int  WaitTouch(ushort timeout);
+            /* p.49 specifies the active touch region */
+            int  SetRegion(ushort x1, ushort y1, ushort x2, ushort y2);
+
+            /* SD RAW card commands, starts at p.50
+                The postfixes Raw and FAT are used to distinguish commands
+                intended for Raw and FAT operations; even though many commands
+                do not have an equivalent in the two modes, the postfix serves
+                to remind the user which mode is being employed.
+            */
+            /* Initialize Memory Card, p. 51 */
+            int SDInit(void);
+            /* Set Address Pointer of Card */
+            int SDSetAddrRaw(unsigned int addr);
+            /* Read Byte from Card */
+            int SDReadByteRaw(char *data);
+            /* Write Byte to Card */
+            int SDWriteByteRaw(char data);
+            /* Read Sector Block from Card */
+            int SDReadSectRaw(unsigned int sectaddr, char *data, int datalen);
+            /* Write Sector Block to Card */
+            int SDWriteSectRaw(unsigned int sectaddr, const char *data, int datalen);
+            /* Screen Copy and Save to Card */
+            int SDScreenCopyRaw(ushort x, ushort y, ushort width, ushort height,
+                                unsigned int sectaddr);
+            /* Display Image / Icon from Card */
+            int SDShowImageRaw(ushort x, ushort y, ushort width, ushort height,
+                               uchar colormode, unsigned int sectaddr);
+            /* Display Object from Card */
+            int SDShowObjectRaw(unsigned int byteaddr);
+            /* Display Video / Animation from Card */
+            int SDShowVideoRaw(ushort x, ushort y, uchar delay, unsigned int sectaddr); /* new format */
+            int SDShowVideoRaw(ushort x, ushort y, ushort width, ushort height,
+                            uchar colormode, uchar delay, ushort frames,
+                            unsigned int sectaddr); /* old format */
+            /*  Run 4DSL Script from Card */
+            int SDRunScriptRaw(unsigned int byteaddr);
+
+            /* SD FAT16 COMMANDS, starts at p.63 */
+            /* Read File From Card */
+            int SDReadFileFAT(void **data, unsigned int *size, const char *filename);
+            /* Write File To Card */
+            int SDWriteFileFAT(const void *data, unsigned int size,
+                               const char *filename, bool append);
+            /* Erase File From Card */
+            int SDEraseFileFAT(const char *filename);
+            /* List Directory From Card; returns -1 for failure, otherwise # of entries */
+            int SDListDirFAT(const char *pattern, std::list<std::string> *dir);
+            /* Screen Copy and Save to Card */
+            int SDScreenCopyFAT(ushort x, ushort y, ushort width, ushort height,
+                                const char *filename);
+            /* Display Image / Icon from Card */
+            int SDShowImageFAT(const char *filename, ushort x, ushort y, unsigned int imgaddr);
+            /* Play Audio WAV file from Card */
+            int SDPlayAudioFAT(const char *filename, uchar option);
+            /* Run 4DSL Script from Card */
+            int SDRunScriptFAT(const char *filename);
+
+    };
+
+};  //namespace disp
+#endif // OLED_H

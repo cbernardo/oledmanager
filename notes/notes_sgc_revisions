@@ -1,0 +1,69 @@
+Notes on the differences between R4 and R11 software
+
+Set New Baud Rate:
+r4,p10
+r11,p11
+	R11 introduces new BAUD settings:
+	0x10 = 128000
+	0x11 = 256000
+
+Display Resolution (0x64 'd'):
+r4: not in spec
+r11,p13
+	Command: 'd'
+	Response: X Y (uses resolution code, not actual numeric values)
+
+Display Control Functions
+r4,p14-15
+r11,p16-17
+	Additions in R11 for uVGA-II:
+	modes: 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e
+
+
+Sleep
+r4,p17
+r11,p19
+	Options which do *not* apply to uVGA-II:
+	0x80, 0x40, 0x20, 0x02
+
+Draw Polygon ('g')
+r4,p30
+r11,p33
+	No change to interface, but description is conflicting
+	with regards to R11 support for filled polygons.
+
+
+Display Image-Icon from Card (RAW)
+r4,p58
+r11,p60
+	R4:  @I,X(M:L),Y(M:L),W(M:L),H(M:L),colorMode,SectorAddr(H:M:L)
+	R11: @I,X(M:L),Y(M:L),SectorAddr(H:M:L)
+
+	R11 introduces a second option; the command depends on whether
+	the current image format is Old or New. R11 still supports the
+	older command in Old Format mode.
+
+Open GCI (FAT) 'G'
+r4: not in specification
+r11,p80
+
+Set GCI Entry (FAT) 'E'
+r4: not in specification
+r11,p81
+
+Display Frame (FAT) 'F'
+r4: not in specification
+r11,p82
+
+
+Display Image-Icon from Card (FAT) 'm'
+r4,p72
+r11,p83
+	r4:  imagePos is a 3-byte Sector Address
+	r11: imagePos is a 4-byte Sector Address
+
+	NOTE: according to the docs, all other commands only
+	use a 3-byte Sector Address. Since only FAT16 is
+	supported, this may be incorrect and the sector address
+	might still be a 3-byte value.
+
